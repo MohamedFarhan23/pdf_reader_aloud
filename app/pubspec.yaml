@@ -1,0 +1,28 @@
+name: pdf_reader_aloud
+description: "Read PDFs aloud in a natural voice with on-device neural TTS (Android + desktop)."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  archive: ^4.6.0
+  file_picker: ^13.3.2
+  flutter:
+    sdk: flutter
+  flutter_soloud: ^5.2.2
+  http: ^1.6.0
+  path: ^1.9.1
+  path_provider: ^2.1.6
+  pdfrx: ^2.11.0
+  shared_preferences: ^2.5.6
+  sherpa_onnx: 1.13.8  # last release with espeak-ng (needed for words missing from the lexicon)
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

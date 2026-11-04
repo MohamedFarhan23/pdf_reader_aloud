@@ -1,102 +1,37 @@
 # PDF Reader Aloud
 
-A terminal PDF reader that reads documents aloud in a **natural voice** using
-neural text-to-speech models that run **entirely on-device**, small enough for
-a laptop, a Raspberry Pi or a phone. No audio or text leaves your machine once
-the voice model has been downloaded.
+Read PDFs aloud in a **natural voice**, using neural text-to-speech that runs
+**entirely on your device**. Reading works offline, and your documents never
+leave the phone or computer.
 
-This is the first milestone: the **text-to-speech layer** plus a simple
-terminal front end (view pages, read them aloud, save to WAV).
+| Folder | What it is |
+|---|---|
+| [`app/`](app/) | **The application.** Flutter app for **Android** and **desktop** (Linux, Windows, macOS) from one codebase. |
+| [`cli/`](cli/) | The original Python terminal prototype (`pdf-reader-aloud read file.pdf`). Handy for scripting and quick voice experiments. |
 
-## Install
+## The app at a glance
 
-```bash
-pip install -e '.[all]'        # kokoro + piper + sounddevice
-# or pick what you need:
-pip install -e '.[kokoro]'     # most natural voice
-pip install -e '.[piper]'      # lightest / fastest, best for phones
-```
+* Open any PDF and view all of its pages (pinch, zoom, scroll).
+* Press play and it reads from the page you're looking at, sentence by sentence.
+  The page follows along, and the sentence being spoken is shown under the page.
+* Pause, skip forward or back by sentence, and change speed (0.75×–2×).
+* Remembers where you stopped in every document.
+* 28 natural English voices (Kokoro), plus lightweight Piper voices for slower phones.
+* A built-in **speed test** that tells you whether your device can run Kokoro smoothly.
+* Desktop keyboard shortcuts: <kbd>Space</kbd> play/pause, <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> previous/next sentence.
 
-The first run downloads the voice model into `~/.cache/pdf-reader-aloud`
-(override with `PDF_READER_ALOUD_MODELS`). Run `pdf-reader-aloud download` to
-fetch it ahead of time.
+See **[app/README.md](app/README.md)** to build and run it on Arch Linux or your Android phone.
 
-For live playback you need one of: the `sounddevice` package (PortAudio),
-`ffplay`, `pacat`, `aplay`, or `sox`'s `play`. Without any of these, use `--out file.wav`.
-
-## Usage
-
-```bash
-pdf-reader-aloud info paper.pdf                 # pages, word count, listening time
-pdf-reader-aloud view paper.pdf -p 1-2          # print page text in the terminal
-pdf-reader-aloud view paper.pdf -p 1 --sentences  # see exactly what will be spoken
-
-pdf-reader-aloud read paper.pdf                 # read the whole thing aloud
-pdf-reader-aloud read paper.pdf -p 3-5 -s 1.2   # pages 3-5, 20% faster
-pdf-reader-aloud read paper.pdf -v bm_george    # a British male Kokoro voice
-pdf-reader-aloud read paper.pdf -e piper        # the lightweight engine
-pdf-reader-aloud read paper.pdf -o paper.wav    # save as audio instead of playing
-
-pdf-reader-aloud say "Try a voice on any text"  # quick voice test
-pdf-reader-aloud voices                         # list Kokoro voices
-```
-
-While reading, the current sentence is printed under a page header. Press
-**Ctrl+C** to stop; the CLI prints a `--pages N- --from-sentence K` command to
-resume where you left off.
-
-## Voice engines
-
-| Engine | Model | Size | Quality | Speed (4-core cloud CPU) |
-|---|---|---|---|---|
-| `kokoro` (default) | [Kokoro-82M](https://github.com/thewh1teagle/kokoro-onnx), int8 ONNX | ~90 MB + 28 MB voices | Very natural, 50+ voices | ~1x real time |
-| `piper` | [Piper](https://github.com/rhasspy/piper) VITS, ONNX | ~60 MB per voice | Good, slightly synthetic | ~35x real time |
-| `tone` | none | 0 | Beeps (for tests) | instant |
-
-Kokoro is the most natural, but on slow CPUs it can only just keep up with
-playback. If you hear gaps between sentences, use `-e piper`, or render
-ahead of time with `-o`.
-
-## How it works
+## How it fits together
 
 ```
-PDF ──pypdf──▶ page text ──clean_text──▶ paragraphs ──chunk_text──▶ sentences
-                                                                       │
-          speakers / WAV ◀── AudioSink ◀── ReadAloud (look-ahead) ◀── TTSEngine
+ PDF ──pdfrx (PDFium)──▶ page text ──cleanup + sentence split──▶ sentences
+                                                                    │
+  speakers ◀── SoLoud (miniaudio) ◀── ReadAloudController ◀── sherpa-onnx TTS
+                                       (synthesizes ahead)     (Kokoro / Piper,
+                                                                background isolate)
 ```
 
-* `pdf.py`: extracts text per page; fixes ligatures, hyphenation across line
-  breaks and hard-wrapped lines; parses page ranges like `1-3,5,8-`.
-* `text.py`: sentence splitting that respects abbreviations (Dr., e.g.,
-  initials), and splits over-long sentences at clause or word boundaries.
-* `tts/`: the `TTSEngine` interface (`synthesize(text) -> Audio`) with
-  Kokoro, Piper and a test tone backend. New engines only need to implement
-  `sample_rate` and `synthesize`.
-* `reader.py`: synthesizes a few sentences ahead on a background thread while
-  the current one plays, adds short pauses between sentences and longer ones
-  between pages.
-* `audio.py`: live playback (sounddevice, or piping PCM to ffplay, pacat,
-  aplay or sox) and a WAV writer.
-
-## Running on Android (Termux)
-
-The engines are pure ONNX Runtime, so the same code runs in
-[Termux](https://termux.dev): `pkg install python sox`, then install the
-package with the `piper` extra. Piper is the recommended engine on phones.
-The future mobile app can reuse the same models through ONNX Runtime Mobile.
-
-## Development
-
-```bash
-pip install -e '.[dev]'
-pytest
-```
-
-The tests use generated PDFs and the `tone` engine, so they need no model downloads.
-
-## Limitations / next steps
-
-* Scanned PDFs without a text layer are reported by `info` but not OCR'd yet.
-* Headers, footers and multi-column layouts are read in extraction order.
-* Ideas: interactive pause/skip keys, bookmarks, a TUI page viewer,
-  sentence highlighting, and a mobile app on the same TTS layer.
+The reading logic (`app/lib/src/core/`) only talks to three small interfaces:
+`DocumentText`, `TtsEngine` and `AudioOutput`. The PDF library, voice engine and
+audio backend are each swappable, and the core logic is unit-tested with fakes.
