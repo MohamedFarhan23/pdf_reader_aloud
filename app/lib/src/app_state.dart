@@ -6,9 +6,12 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'audio/soloud_output.dart';
 import 'core/interfaces.dart';
 import 'core/read_aloud_controller.dart';
+import 'library/folder_scanner.dart';
 import 'library/stores.dart';
+import 'library/thumbnail_cache.dart';
 import 'tts/model_manager.dart';
 import 'tts/sherpa_engine.dart';
 import 'tts/voice_catalog.dart';
@@ -19,10 +22,11 @@ bool get isMobile => Platform.isAndroid || Platform.isIOS;
 /// App-wide state: settings, the document library, voice models and the
 /// currently loaded TTS engine.
 class AppState extends ChangeNotifier {
-  AppState._(this._settingsStore, this._libraryStore, this.models, this.libraryDir)
-      : _settings = _settingsStore.load(),
-        _library = _libraryStore.load() {
+  AppState._(this._prefs, this._settingsStore, this._libraryStore, this.models, this.libraryDir, this.thumbnails)
+    : _settings = _settingsStore.load(),
+      _library = _libraryStore.load() {
     models.addListener(notifyListeners);
+    SoloudAudioOutput.setVolume(_settings.volume);
   }
 
   static Future<AppState> create() async {
@@ -33,17 +37,21 @@ class AppState extends ChangeNotifier {
     final base = isMobile ? (await getApplicationDocumentsDirectory()).path : support.path;
     final libraryDir = p.join(base, 'pdf_library');
     return AppState._(
+      prefs,
       SettingsStore(prefs),
       LibraryStore(prefs),
       ModelManager(p.join(support.path, 'voices')),
       libraryDir,
+      ThumbnailCache(p.join(support.path, 'thumbnails')),
     );
   }
 
+  final SharedPreferences _prefs;
   final SettingsStore _settingsStore;
   final LibraryStore _libraryStore;
   final ModelManager models;
   final String libraryDir;
+  final ThumbnailCache thumbnails;
 
   Settings _settings;
   List<LibraryEntry> _library;
@@ -52,6 +60,7 @@ class AppState extends ChangeNotifier {
   String? _engineKey;
   Future<TtsEngine?>? _engineLoading;
   String? _engineError;
+  String? _engineStage;
 
   Settings get settings => _settings;
   List<LibraryEntry> get library => List.unmodifiable(_library);
@@ -60,6 +69,9 @@ class AppState extends ChangeNotifier {
   TtsEngine? get engine => _engine;
   bool get engineLoading => _engineLoading != null;
   String? get engineError => _engineError;
+
+  /// What the voice loader is doing right now, for the loading bar.
+  String? get engineStage => _engineStage;
   bool get hasAnyVoice => models.installed.isNotEmpty;
 
   // ---- Voice ---------------------------------------------------------------
@@ -78,10 +90,15 @@ class AppState extends ChangeNotifier {
 
   Future<TtsEngine?> _loadEngine(VoiceModel model, String key) async {
     _engineError = null;
+    _engineStage = 'Starting up';
     notifyListeners();
     try {
       final engine = await SherpaTtsEngine.load(
         SherpaModelConfig.forModel(model, models.modelDir(model), british: speaker.british),
+        onStage: (stage) {
+          _engineStage = stage;
+          notifyListeners();
+        },
       );
       final old = _engine;
       _engine = engine;
@@ -93,6 +110,7 @@ class AppState extends ChangeNotifier {
       return null;
     } finally {
       _engineLoading = null;
+      _engineStage = null;
       notifyListeners();
       // The selection may have changed while we were loading.
       if (_engineKey != _keyFor(voiceModel, speaker) && models.isInstalled(voiceModel)) {
@@ -104,6 +122,7 @@ class AppState extends ChangeNotifier {
   Future<void> updateSettings(Settings next) async {
     final previousKey = _keyFor(voiceModel, speaker);
     _settings = next;
+    SoloudAudioOutput.setVolume(next.volume);
     // Keep the speaker valid for the chosen model.
     if (!voiceModel.speakers.any((s) => s.id == next.speakerId)) {
       _settings = next.copyWith(speakerId: voiceModel.speakers.first.id);
@@ -120,6 +139,81 @@ class AppState extends ChangeNotifier {
     if (!models.isInstalled(voiceModel)) {
       final defaultSpeaker = model.family == VoiceFamily.kokoro ? 3 /* Heart */ : model.speakers.first.id;
       updateSettings(_settings.copyWith(modelId: model.id, speakerId: defaultSpeaker));
+    }
+  }
+
+  // ---- Links ---------------------------------------------------------------
+
+  /// Whether to ask before opening a web link from a PDF in the browser.
+  bool get confirmExternalLinks => _prefs.getBool('links.confirm') ?? true;
+
+  Future<void> setConfirmExternalLinks(bool ask) async {
+    await _prefs.setBool('links.confirm', ask);
+    notifyListeners();
+  }
+
+  // ---- PDF folders -----------------------------------------------------------
+
+  List<String>? _folders;
+  List<FoundPdf> _found = const [];
+  bool _scanning = false;
+  bool? _gridView;
+
+  /// Folders the user added to the PDF library (scanned for PDFs).
+  List<String> get folders => List.unmodifiable(_folders ??= _prefs.getStringList('library.folders') ?? const []);
+  List<FoundPdf> get foundPdfs => _found;
+  bool get scanning => _scanning;
+  bool get gridView => _gridView ??= _prefs.getBool('library.grid') ?? true;
+
+  Future<void> setGridView(bool grid) async {
+    _gridView = grid;
+    notifyListeners();
+    await _prefs.setBool('library.grid', grid);
+  }
+
+  Future<void> addFolder(String path) async {
+    if (folders.contains(path)) return;
+    _folders = [...folders, path];
+    await _prefs.setStringList('library.folders', _folders!);
+    await rescan();
+  }
+
+  Future<void> removeFolder(String path) async {
+    _folders = folders.where((f) => f != path).toList();
+    await _prefs.setStringList('library.folders', _folders!);
+    await rescan();
+  }
+
+  ScanControl? _scan;
+  int _foldersSeen = 0;
+
+  /// How many folders the running scan has looked at.
+  int get foldersScanned => _foldersSeen;
+
+  /// Stops a running scan; the PDFs found so far stay listed.
+  void stopScan() => _scan?.cancel();
+
+  /// Looks through the library folders for PDFs again.
+  Future<void> rescan() async {
+    if (_scanning) return;
+    final control = _scan = ScanControl();
+    _scanning = true;
+    _foldersSeen = 0;
+    notifyListeners();
+    try {
+      _found = await scanForPdfs(
+        folders,
+        control: control,
+        onProgress: (found, seen) {
+          _found = found;
+          _foldersSeen = seen;
+          notifyListeners();
+        },
+      );
+    } finally {
+      _scanning = false;
+      _scan = null;
+      notifyListeners();
     }
   }
 

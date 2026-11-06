@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -5,12 +6,14 @@ import 'package:pdfrx/pdfrx.dart';
 
 import 'src/app_state.dart';
 import 'src/ui/home_screen.dart';
+import 'src/ui/motion.dart';
 import 'src/ui/reader_screen.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   await pdfrxFlutterInitialize();
   final state = await AppState.create();
+  if (!isMobile && state.folders.isNotEmpty) unawaited(state.rescan());
 
   // Desktop: `pdf_reader_aloud book.pdf` (or "Open with") opens the file directly.
   final initialFile = args.where((a) => a.toLowerCase().endsWith('.pdf') && File(a).existsSync()).firstOrNull;
@@ -29,8 +32,13 @@ class PdfReaderAloudApp extends StatelessWidget {
     return MaterialApp(
       title: 'PDF Reader Aloud',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: seed, useMaterial3: true),
-      darkTheme: ThemeData(colorSchemeSeed: seed, brightness: Brightness.dark, useMaterial3: true),
+      theme: ThemeData(colorSchemeSeed: seed, useMaterial3: true, pageTransitionsTheme: smoothPageTransitions),
+      darkTheme: ThemeData(
+        colorSchemeSeed: seed,
+        brightness: Brightness.dark,
+        useMaterial3: true,
+        pageTransitionsTheme: smoothPageTransitions,
+      ),
       home: _Launcher(state: state, initialFile: initialFile),
     );
   }
@@ -54,9 +62,11 @@ class _LauncherState extends State<_Launcher> {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         final entry = await widget.state.openDocument(file);
         if (!mounted) return;
-        Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (_) => ReaderScreen(state: widget.state, entry: entry),
-        ));
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => ReaderScreen(state: widget.state, entry: entry),
+          ),
+        );
       });
     }
   }

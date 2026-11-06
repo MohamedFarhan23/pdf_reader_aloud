@@ -14,9 +14,7 @@ class TtsAudio {
   final Float32List samples;
   final int sampleRate;
 
-  Duration get duration => Duration(
-        microseconds: sampleRate == 0 ? 0 : samples.length * 1000000 ~/ sampleRate,
-      );
+  Duration get duration => Duration(microseconds: sampleRate == 0 ? 0 : samples.length * 1000000 ~/ sampleRate);
 }
 
 /// A text-to-speech backend that runs on-device.
@@ -36,6 +34,10 @@ abstract class AudioOutput {
   Future<void> play(TtsAudio audio);
   Future<void> pause();
   Future<void> resume();
+
+  /// How far into the current clip playback is, or null if unknown or nothing is
+  /// playing. Used to keep the on-screen highlight in step with the voice.
+  Duration? get position => null;
 
   /// Stops the current clip (its [play] future completes).
   Future<void> stop();

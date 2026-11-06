@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../audio/soloud_output.dart';
+import '../tts/model_manager.dart';
 import '../tts/sherpa_engine.dart';
 import '../tts/voice_catalog.dart';
+import 'loading_bar.dart';
 import 'player_panel.dart' show speedSteps;
 
 /// Download voice models, pick a speaker and speed, and test the voice.
@@ -68,8 +70,10 @@ class _VoicesScreenState extends State<VoicesScreen> {
                 children: [
                   Text('Voice models', style: theme.textTheme.titleSmall),
                   const SizedBox(height: 4),
-                  Text('Models run on this device. Download once, then read offline.',
-                      style: theme.textTheme.bodySmall),
+                  Text(
+                    'Models run on this device. Download once, then read offline.',
+                    style: theme.textTheme.bodySmall,
+                  ),
                   const SizedBox(height: 8),
                   for (final model in voiceCatalog) _ModelCard(state: state, model: model),
                   const SizedBox(height: 24),
@@ -85,9 +89,7 @@ class _VoicesScreenState extends State<VoicesScreen> {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      Expanded(
-                        child: Text('Speaker · ${selected.name}', style: theme.textTheme.titleSmall),
-                      ),
+                      Expanded(child: Text('Speaker · ${selected.name}', style: theme.textTheme.titleSmall)),
                       FilledButton.tonalIcon(
                         onPressed: !installed || _testing ? null : _test,
                         // No spinner here: animating would steal CPU from the speed test itself.
@@ -160,17 +162,41 @@ class _ModelCard extends StatelessWidget {
           width: selected ? 2 : 1,
         ),
       ),
-      child: ListTile(
-        enabled: installed,
-        onTap: installed
-            ? () => state.updateSettings(state.settings.copyWith(
-                  modelId: model.id,
-                  speakerId: model.family == VoiceFamily.kokoro ? 3 : model.speakers.first.id,
-                ))
-            : null,
-        leading: Icon(selected && installed ? Icons.radio_button_checked : Icons.radio_button_unchecked),
-        title: Text(model.name),
-        subtitle: Text([
+      child: Column(
+        children: [
+          _tile(installed, selected, progress, error, trailing),
+          if (progress != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+              child: progress.fraction == null
+                  ? LoadingBar(
+                      key: ValueKey('unpack-${model.id}'),
+                      title: 'Unpacking ${model.name}',
+                      stage: 'Unpacking files',
+                      expected: Duration(seconds: model.downloadMb ~/ 8),
+                    )
+                  : _DownloadBar(label: 'Downloading ${model.name}', fraction: progress.fraction!),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tile(bool installed, bool selected, DownloadProgress? progress, String? error, Widget trailing) {
+    return ListTile(
+      enabled: installed,
+      onTap: installed
+          ? () => state.updateSettings(
+              state.settings.copyWith(
+                modelId: model.id,
+                speakerId: model.family == VoiceFamily.kokoro ? 3 : model.speakers.first.id,
+              ),
+            )
+          : null,
+      leading: Icon(selected && installed ? Icons.radio_button_checked : Icons.radio_button_unchecked),
+      title: Text(model.name),
+      subtitle: Text(
+        [
           model.description,
           if (progress != null)
             progress.fraction == null
@@ -179,10 +205,47 @@ class _ModelCard extends StatelessWidget {
           else if (!installed)
             '${model.downloadMb} MB download',
           if (error != null) 'Failed: $error',
-        ].join('\n')),
-        isThreeLine: true,
-        trailing: trailing,
+        ].join('\n'),
       ),
+      isThreeLine: true,
+      trailing: trailing,
+    );
+  }
+}
+
+/// A download bar that glides to each new value instead of jumping.
+class _DownloadBar extends StatelessWidget {
+  const _DownloadBar({required this.label, required this.fraction});
+
+  final String label;
+  final double fraction;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(label, style: theme.textTheme.titleSmall)),
+            Text(
+              '${(fraction * 100).round()}%',
+              style: theme.textTheme.labelLarge?.copyWith(color: theme.colorScheme.primary),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        TweenAnimationBuilder<double>(
+          tween: Tween(end: fraction),
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeOut,
+          builder: (_, value, _) => ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(value: value, minHeight: 8),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -195,7 +258,8 @@ class _SpeakerList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final speakers = [...model.speakers]..sort((a, b) {
+    final speakers = [...model.speakers]
+      ..sort((a, b) {
         if (a.recommended != b.recommended) return a.recommended ? -1 : 1;
         return a.id.compareTo(b.id);
       });
@@ -228,10 +292,16 @@ class _SpeedVerdict extends StatelessWidget {
     final took = result.elapsed.inMilliseconds / 1000;
     final (icon, color, verdict) = switch (rtf) {
       >= 1.3 => (Icons.check_circle, Colors.green, 'Fast enough for smooth, continuous reading on this device.'),
-      >= 1.0 => (Icons.check_circle_outline, Colors.orange,
-          'Just keeps up. Reading should flow, with an occasional short pause.'),
-      _ => (Icons.warning_amber_rounded, theme.colorScheme.error,
-          'Slower than real time here: expect pauses between sentences. A Piper voice will be smooth.'),
+      >= 1.0 => (
+        Icons.check_circle_outline,
+        Colors.orange,
+        'Just keeps up. Reading should flow, with an occasional short pause.',
+      ),
+      _ => (
+        Icons.warning_amber_rounded,
+        theme.colorScheme.error,
+        'Slower than real time here: expect pauses between sentences. A Piper voice will be smooth.',
+      ),
     };
     return Card.filled(
       margin: const EdgeInsets.only(top: 8),

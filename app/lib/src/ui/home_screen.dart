@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../library/stores.dart';
 import '../tts/voice_catalog.dart';
+import 'motion.dart';
+import 'pdf_library_view.dart';
 import 'reader_screen.dart';
 import 'voices_screen.dart';
 
@@ -24,8 +26,28 @@ class HomeScreen extends StatelessWidget {
     if (context.mounted) _openReader(context, entry);
   }
 
+  Future<void> _openPath(BuildContext context, String path, String name) async {
+    final entry = await state.openDocument(path, name: name);
+    if (context.mounted) _openReader(context, entry);
+  }
+
   void _openReader(BuildContext context, LibraryEntry entry) {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ReaderScreen(state: state, entry: entry)));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ReaderScreen(state: state, entry: entry),
+      ),
+    );
+  }
+
+  /// How many recently opened PDFs the home screen shows before "View all recents".
+  static const _recentShown = 3;
+
+  void _openAllRecents(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _AllRecentsScreen(state: state, onOpen: (entry) => _openReader(context, entry)),
+      ),
+    );
   }
 
   void _openVoices(BuildContext context) {
@@ -56,29 +78,85 @@ class HomeScreen extends StatelessWidget {
           ),
           body: Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
+              constraints: BoxConstraints(maxWidth: isMobile ? 760 : 1200),
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
                 children: [
                   if (!state.hasAnyVoice) _VoiceSetupCard(state: state, onMore: () => _openVoices(context)),
-                  if (library.isEmpty)
+                  if (library.isEmpty && (isMobile || state.folders.isEmpty))
                     const _EmptyLibrary()
-                  else ...[
+                  else if (library.isNotEmpty) ...[
                     Padding(
                       padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
-                      child: Text('Recent', style: Theme.of(context).textTheme.titleSmall),
+                      child: Text(
+                        isMobile ? 'Recent' : 'Recently opened',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
                     ),
-                    for (final entry in library)
-                      _LibraryTile(
-                        entry: entry,
-                        onOpen: () => _openReader(context, entry),
-                        onRemove: () => state.removeDocument(entry),
+                    for (final (i, entry) in library.take(_recentShown).indexed)
+                      FadeSlideIn(
+                        key: ValueKey(entry.path),
+                        delay: Duration(milliseconds: 60 * i),
+                        child: _LibraryTile(
+                          entry: entry,
+                          onOpen: () => _openReader(context, entry),
+                          onRemove: () => state.removeDocument(entry),
+                        ),
+                      ),
+                    if (library.length > _recentShown)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () => _openAllRecents(context),
+                          icon: const Icon(Icons.history),
+                          label: Text('View all recents (${library.length})'),
+                        ),
                       ),
                   ],
+                  if (!isMobile) PdfLibraryView(state: state, onOpen: (path, name) => _openPath(context, path, name)),
                 ],
               ),
             ),
           ),
+        );
+      },
+    );
+  }
+}
+
+/// Every document opened before, newest first.
+class _AllRecentsScreen extends StatelessWidget {
+  const _AllRecentsScreen({required this.state, required this.onOpen});
+
+  final AppState state;
+  final void Function(LibraryEntry entry) onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) {
+        final library = state.library;
+        return Scaffold(
+          appBar: AppBar(title: Text('Recently opened (${library.length})')),
+          body: library.isEmpty
+              ? const Center(child: Text('Nothing opened yet.'))
+              : Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 760),
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                      children: [
+                        for (final entry in library)
+                          _LibraryTile(
+                            entry: entry,
+                            onOpen: () => onOpen(entry),
+                            onRemove: () => state.removeDocument(entry),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
         );
       },
     );
@@ -135,8 +213,11 @@ class _EmptyLibrary extends StatelessWidget {
           const SizedBox(height: 16),
           Text('Open a PDF to start listening', style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
-          Text('Your recent documents and reading progress appear here.',
-              style: theme.textTheme.bodyMedium, textAlign: TextAlign.center),
+          Text(
+            'Your recent documents and reading progress appear here.',
+            style: theme.textTheme.bodyMedium,
+            textAlign: TextAlign.center,
+          ),
         ],
       ),
     );
@@ -174,9 +255,11 @@ class _VoiceSetupCard extends StatelessWidget {
             if (progress != null) ...[
               LinearProgressIndicator(value: progress.fraction),
               const SizedBox(height: 4),
-              Text(progress.fraction == null
-                  ? '${progress.phase}…'
-                  : '${progress.phase} ${(progress.fraction! * 100).round()}%'),
+              Text(
+                progress.fraction == null
+                    ? '${progress.phase}…'
+                    : '${progress.phase} ${(progress.fraction! * 100).round()}%',
+              ),
             ] else
               Wrap(
                 spacing: 8,

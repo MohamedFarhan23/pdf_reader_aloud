@@ -24,10 +24,7 @@ String cleanPdfText(String raw) {
   text = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
   text = text.replaceAll(RegExp(r'[ \t\f\v ]+'), ' ');
   // "exam-\nple" -> "example"
-  text = text.replaceAllMapped(
-    RegExp(r'(\w)-\n\s*(\w)'),
-    (m) => '${m[1]}${m[2]}',
-  );
+  text = text.replaceAllMapped(RegExp(r'(\w)-\n\s*(\w)'), (m) => '${m[1]}${m[2]}');
   text = _markParagraphBreaks(text);
   final paragraphs = text
       .split(RegExp(r'\n\s*\n'))
@@ -60,7 +57,8 @@ String _markParagraphBreaks(String text) {
     final trimmed = line.trim();
     final next = lines[i + 1];
     final isShort = trimmed.isNotEmpty && trimmed.length < fullLine * 0.7;
-    final breakHere = trimmed.isNotEmpty &&
+    final breakHere =
+        trimmed.isNotEmpty &&
         next.trim().isNotEmpty &&
         !_endsContinuation.hasMatch(trimmed) &&
         _startsLikeNewBlock.hasMatch(next) &&
@@ -72,10 +70,46 @@ String _markParagraphBreaks(String text) {
 
 /// Abbreviations that end with a period but don't end a sentence.
 const _abbreviations = {
-  'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'st', 'vs', 'etc', 'e.g', 'i.e',
-  'fig', 'figs', 'eq', 'eqs', 'no', 'vol', 'pp', 'p', 'ch', 'sec', 'approx',
-  'cf', 'al', 'inc', 'ltd', 'co', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul',
-  'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
+  'mr',
+  'mrs',
+  'ms',
+  'dr',
+  'prof',
+  'sr',
+  'jr',
+  'st',
+  'vs',
+  'etc',
+  'e.g',
+  'i.e',
+  'fig',
+  'figs',
+  'eq',
+  'eqs',
+  'no',
+  'vol',
+  'pp',
+  'p',
+  'ch',
+  'sec',
+  'approx',
+  'cf',
+  'al',
+  'inc',
+  'ltd',
+  'co',
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'sept',
+  'oct',
+  'nov',
+  'dec',
 };
 
 final _sentenceEnd = RegExp(r'''([.!?]+["')\]]*)\s+(?=["'(\[]?[A-Z0-9])''');
@@ -132,18 +166,32 @@ List<String> _splitLong(String sentence, int maxChars) {
 
 final _speakable = RegExp(r'[\p{L}\p{N}]', unicode: true);
 
-/// Turns a page of (already cleaned) text into an ordered list of speakable chunks.
-List<String> chunkText(String text, {int maxChars = 300}) {
-  final chunks = <String>[];
+/// A speakable chunk and whether it is the last one of its paragraph (or heading).
+typedef Chunk = ({String text, bool endsParagraph});
+
+/// Turns a page of (already cleaned) text into ordered speakable chunks, remembering
+/// paragraph ends so the reader can pause longer there.
+List<Chunk> chunkParagraphs(String text, {int maxChars = 300}) {
+  final out = <Chunk>[];
   for (final paragraph in text.split(RegExp(r'\n\s*\n'))) {
     final flat = paragraph.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).join(' ');
     if (flat.isEmpty) continue;
+    final pieces = <String>[];
     for (final sentence in splitSentences(flat)) {
-      chunks.addAll(_splitLong(sentence, maxChars));
+      pieces.addAll(_splitLong(sentence, maxChars));
+    }
+    final speakable = pieces.where(_speakable.hasMatch).toList();
+    for (var i = 0; i < speakable.length; i++) {
+      out.add((text: speakable[i], endsParagraph: i == speakable.length - 1));
     }
   }
-  return chunks.where(_speakable.hasMatch).toList();
+  return out;
 }
+
+/// Turns a page of (already cleaned) text into an ordered list of speakable chunks.
+List<String> chunkText(String text, {int maxChars = 300}) => [
+  for (final c in chunkParagraphs(text, maxChars: maxChars)) c.text,
+];
 
 /// Cleans raw page text and splits it into sentences in one step.
 List<String> sentencesForPage(String rawText, {int maxChars = 300}) =>

@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'interfaces.dart';
+import 'speech_text.dart';
 import 'text_chunker.dart';
+import 'text_spans.dart';
 
 /// A sentence within a document: 1-based [page], 0-based [sentence].
 @immutable
@@ -14,8 +16,7 @@ class ReadingPosition {
   final int sentence;
 
   @override
-  bool operator ==(Object other) =>
-      other is ReadingPosition && other.page == page && other.sentence == sentence;
+  bool operator ==(Object other) => other is ReadingPosition && other.page == page && other.sentence == sentence;
 
   @override
   int get hashCode => Object.hash(page, sentence);
@@ -45,7 +46,9 @@ class ReadAloudController extends ChangeNotifier {
     required this.output,
     this._engine,
     this.lookahead = 3,
-    this.sentencePause = const Duration(milliseconds: 120),
+    this.sentencePause = const Duration(milliseconds: 200),
+    this.paragraphPause = const Duration(milliseconds: 650),
+    this.headingPause = const Duration(milliseconds: 750),
     this.pagePause = const Duration(milliseconds: 600),
     this.onPositionChanged,
   });
@@ -55,6 +58,14 @@ class ReadAloudController extends ChangeNotifier {
   final int lookahead;
   final Duration sentencePause;
   final Duration pagePause;
+
+  /// Pause after the last sentence of a paragraph, and after a heading.
+  final Duration paragraphPause;
+  final Duration headingPause;
+
+  /// Longest piece of text sent to the voice at once. Shorter pieces start sooner,
+  /// which matters most after a short heading when the next sentence is long.
+  static const maxChunkChars = 140;
 
   /// Called whenever a new sentence starts playing (use it to save progress).
   void Function(ReadingPosition position)? onPositionChanged;
@@ -75,6 +86,15 @@ class ReadAloudController extends ChangeNotifier {
   bool _disposed = false;
 
   final Map<int, List<String>> _sentenceCache = {};
+  final Map<int, List<bool>> _paragraphEnds = {};
+  final Map<int, String> _rawCache = {};
+  final Map<int, List<SentenceSpan>?> _spanCache = {};
+  final Stopwatch _clip = Stopwatch();
+  Duration _speechStart = Duration.zero;
+  Duration _speechEnd = Duration.zero;
+
+  /// The speaker lags the position the mixer reports by about one audio buffer.
+  static const _outputLatency = Duration(milliseconds: 90);
   final Map<ReadingPosition, _Synthesis> _synthCache = {};
 
   ReaderStatus get status => _status;
@@ -91,9 +111,48 @@ class ReadAloudController extends ChangeNotifier {
   Future<List<String>> sentencesOf(int page) async {
     final cached = _sentenceCache[page];
     if (cached != null) return cached;
-    final sentences = sentencesForPage(await document.pageText(page));
+    final raw = await document.pageText(page);
+    final chunks = chunkParagraphs(cleanPdfText(raw), maxChars: maxChunkChars);
+    final sentences = [for (final c in chunks) c.text];
+    _rawCache[page] = raw;
+    _paragraphEnds[page] = [for (final c in chunks) c.endsParagraph];
     _sentenceCache[page] = sentences;
     return sentences;
+  }
+
+  /// Where each sentence of [page] sits in the PDF's page text (for highlighting),
+  /// or null if the text could not be aligned.
+  Future<List<SentenceSpan>?> spansOf(int page) async {
+    if (_spanCache.containsKey(page)) return _spanCache[page];
+    final sentences = await sentencesOf(page);
+    return _spanCache[page] = alignSentences(_rawCache[page]!, sentences);
+  }
+
+  /// How far (0..1) through the *spoken part* of the current sentence playback is
+  /// (leading and trailing silence excluded). Uses the audio device's real position
+  /// when it reports one, so the highlight follows the voice, pauses included.
+  double get clipFraction {
+    final span = (_speechEnd - _speechStart).inMicroseconds;
+    if (span <= 0) return 0;
+    final reported = output.position;
+    final played = reported != null ? reported - _outputLatency : Duration(microseconds: _clip.elapsedMicroseconds);
+    return ((played - _speechStart).inMicroseconds / span).clamp(0.0, 1.0);
+  }
+
+  /// Where speech starts and ends inside [audio] (TTS clips have silent edges).
+  static (Duration, Duration) _speechBounds(TtsAudio audio) {
+    final s = audio.samples;
+    const threshold = 0.012;
+    var first = 0;
+    while (first < s.length && s[first].abs() < threshold) {
+      first++;
+    }
+    var last = s.length - 1;
+    while (last > first && s[last].abs() < threshold) {
+      last--;
+    }
+    Duration at(int i) => Duration(microseconds: i * 1000000 ~/ audio.sampleRate);
+    return first >= last ? (Duration.zero, audio.duration) : (at(first), at(last + 1));
   }
 
   /// Moves the idle cursor without playing (e.g. restoring saved progress).
@@ -115,8 +174,7 @@ class ReadAloudController extends ChangeNotifier {
 
   /// Changes speaker / speed; anything already synthesized is discarded.
   void setVoice({int? speakerId, double? speed}) {
-    final changed = (speakerId != null && speakerId != _speakerId) ||
-        (speed != null && speed != _speed);
+    final changed = (speakerId != null && speakerId != _speakerId) || (speed != null && speed != _speed);
     _speakerId = speakerId ?? _speakerId;
     _speed = speed ?? _speed;
     if (changed) _voiceChanged();
@@ -144,9 +202,13 @@ class ReadAloudController extends ChangeNotifier {
   Future<void> pause() async {
     if (_status != ReaderStatus.playing && _status != ReaderStatus.preparing) return;
     _resumeGate ??= Completer<void>();
-    if (_clipPlaying) await output.pause();
+    if (_clipPlaying) {
+      _clip.stop();
+      await output.pause();
+    }
     _status = ReaderStatus.paused;
     _notify();
+    if (_engine != null) unawaited(_bufferWhilePaused(_generation));
   }
 
   Future<void> resume() async {
@@ -155,6 +217,7 @@ class ReadAloudController extends ChangeNotifier {
     _resumeGate = null;
     if (_clipPlaying) {
       _status = ReaderStatus.playing;
+      _clip.start();
       await output.resume();
     } else {
       _status = ReaderStatus.preparing;
@@ -238,9 +301,7 @@ class ReadAloudController extends ChangeNotifier {
       if (pos == null) {
         if (gen == _generation) {
           final anyText = await _normalize(const ReadingPosition(1)) != null;
-          _error = anyText
-              ? null
-              : 'This PDF has no readable text (it may be scanned images).';
+          _error = anyText ? null : 'This PDF has no readable text (it may be scanned images).';
           _finished = anyText;
           _status = ReaderStatus.idle;
           _notify();
@@ -262,6 +323,12 @@ class ReadAloudController extends ChangeNotifier {
         if (gen != _generation) return;
         _synthCache.remove(current);
 
+        _clip
+          ..stop()
+          ..reset();
+        final bounds = _speechBounds(audio);
+        _speechStart = bounds.$1;
+        _speechEnd = bounds.$2;
         _position = current;
         _currentSentence = text;
         onPositionChanged?.call(current);
@@ -276,12 +343,14 @@ class ReadAloudController extends ChangeNotifier {
         _notify();
 
         final next = upcoming.isEmpty ? null : upcoming.first;
-        final gap = next == null || next.page != current.page ? pagePause : sentencePause;
+        final gap = _gapAfter(current, next);
         _clipPlaying = true;
+        _clip.start();
         try {
           await output.play(_withTrailingSilence(audio, gap));
         } finally {
           _clipPlaying = false;
+          _clip.stop();
         }
         if (gen != _generation) return;
         pos = next;
@@ -299,15 +368,31 @@ class ReadAloudController extends ChangeNotifier {
     }
   }
 
-  /// Ensures synthesis is queued for [current] and the next [lookahead] sentences.
-  /// Returns the upcoming positions (not including [current]).
+  /// How long to pause after [current]: longer after paragraphs and headings, so the
+  /// structure of the text is audible.
+  Duration _gapAfter(ReadingPosition current, ReadingPosition? next) {
+    if (next == null || next.page != current.page) return pagePause;
+    if (_paragraphEnds[current.page]?[current.sentence] != true) return sentencePause;
+    final text = _sentenceCache[current.page]![current.sentence];
+    final isHeading = !RegExp(r'[.!?:"”’)\]]\s*$').hasMatch(text);
+    return isHeading ? headingPause : paragraphPause;
+  }
+
+  /// Ensures synthesis is queued for [current], the rest of its page, and the first
+  /// [lookahead] sentences of the next page. Returns the upcoming positions (not
+  /// including [current]) that were queued.
+  ///
+  /// The whole page is synthesized in the background while it is being read (and while
+  /// paused), so a slow voice builds up a buffer instead of stalling between sentences.
   Future<List<ReadingPosition>> _prefetch(ReadingPosition current) async {
     final upcoming = <ReadingPosition>[];
     _queueSynthesis(current);
     var p = current;
-    for (var i = 0; i < lookahead; i++) {
+    var onNextPage = 0;
+    while (true) {
       final n = await _next(p);
       if (n == null) break;
+      if (n.page != current.page && ++onNextPage > lookahead) break;
       upcoming.add(n);
       _queueSynthesis(n);
       p = n;
@@ -315,10 +400,23 @@ class ReadAloudController extends ChangeNotifier {
     return upcoming;
   }
 
+  /// While paused, keeps synthesizing so the whole next page is ready in memory too.
+  Future<void> _bufferWhilePaused(int gen) async {
+    var p = _position;
+    final lastPage = p.page + 1;
+    while (gen == _generation && _status == ReaderStatus.paused) {
+      final n = await _next(p);
+      if (n == null || n.page > lastPage) return;
+      if (gen != _generation || _status != ReaderStatus.paused) return;
+      _queueSynthesis(n);
+      p = n;
+    }
+  }
+
   void _queueSynthesis(ReadingPosition pos) {
     if (_synthCache.containsKey(pos)) return;
     final text = _sentenceCache[pos.page]![pos.sentence];
-    final future = _engine!.synthesize(text, speakerId: _speakerId, speed: _speed);
+    final future = _engine!.synthesize(speechText(text), speakerId: _speakerId, speed: _speed);
     future.ignore(); // errors surface when the sentence is awaited
     _synthCache[pos] = _Synthesis(future);
   }
@@ -333,8 +431,7 @@ class ReadAloudController extends ChangeNotifier {
     return null;
   }
 
-  Future<ReadingPosition?> _next(ReadingPosition p) =>
-      _normalize(ReadingPosition(p.page, p.sentence + 1));
+  Future<ReadingPosition?> _next(ReadingPosition p) => _normalize(ReadingPosition(p.page, p.sentence + 1));
 
   Future<ReadingPosition?> _previous(ReadingPosition p) async {
     if (p.sentence > 0) return ReadingPosition(p.page, p.sentence - 1);

@@ -21,29 +21,29 @@ class LibraryEntry {
   final DateTime lastOpened;
 
   LibraryEntry copyWith({int? pageCount, ReadingPosition? position, DateTime? lastOpened}) => LibraryEntry(
-        path: path,
-        title: title,
-        pageCount: pageCount ?? this.pageCount,
-        position: position ?? this.position,
-        lastOpened: lastOpened ?? this.lastOpened,
-      );
+    path: path,
+    title: title,
+    pageCount: pageCount ?? this.pageCount,
+    position: position ?? this.position,
+    lastOpened: lastOpened ?? this.lastOpened,
+  );
 
   Map<String, Object> toJson() => {
-        'path': path,
-        'title': title,
-        'pageCount': pageCount,
-        'page': position.page,
-        'sentence': position.sentence,
-        'lastOpened': lastOpened.toIso8601String(),
-      };
+    'path': path,
+    'title': title,
+    'pageCount': pageCount,
+    'page': position.page,
+    'sentence': position.sentence,
+    'lastOpened': lastOpened.toIso8601String(),
+  };
 
   factory LibraryEntry.fromJson(Map<String, dynamic> j) => LibraryEntry(
-        path: j['path'] as String,
-        title: j['title'] as String,
-        pageCount: j['pageCount'] as int? ?? 0,
-        position: ReadingPosition(j['page'] as int? ?? 1, j['sentence'] as int? ?? 0),
-        lastOpened: DateTime.tryParse(j['lastOpened'] as String? ?? ''),
-      );
+    path: j['path'] as String,
+    title: j['title'] as String,
+    pageCount: j['pageCount'] as int? ?? 0,
+    position: ReadingPosition(j['page'] as int? ?? 1, j['sentence'] as int? ?? 0),
+    lastOpened: DateTime.tryParse(j['lastOpened'] as String? ?? ''),
+  );
 }
 
 /// Persists the list of recently opened documents.
@@ -58,8 +58,7 @@ class LibraryStore {
     if (raw == null) return [];
     try {
       final list = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
-      return list.map(LibraryEntry.fromJson).toList()
-        ..sort((a, b) => b.lastOpened.compareTo(a.lastOpened));
+      return list.map(LibraryEntry.fromJson).toList()..sort((a, b) => b.lastOpened.compareTo(a.lastOpened));
     } catch (_) {
       return [];
     }
@@ -71,21 +70,31 @@ class LibraryStore {
 
 /// User preferences: which voice, which speaker, how fast.
 class Settings {
-  const Settings({this.modelId = 'kokoro-v1', this.speakerId = 3, this.speed = 1.0, this.followReading = true});
+  const Settings({
+    this.modelId = 'kokoro-v1',
+    this.speakerId = 3,
+    this.speed = 1.0,
+    this.followReading = true,
+    this.volume = 1.0,
+  });
 
   final String modelId;
   final int speakerId;
   final double speed;
 
+  /// Playback gain: 1.0 is normal, up to 1.5 boosts quiet voices.
+  final double volume;
+
   /// Scroll the PDF view to the page being read.
   final bool followReading;
 
-  Settings copyWith({String? modelId, int? speakerId, double? speed, bool? followReading}) => Settings(
-        modelId: modelId ?? this.modelId,
-        speakerId: speakerId ?? this.speakerId,
-        speed: speed ?? this.speed,
-        followReading: followReading ?? this.followReading,
-      );
+  Settings copyWith({String? modelId, int? speakerId, double? speed, bool? followReading, double? volume}) => Settings(
+    modelId: modelId ?? this.modelId,
+    speakerId: speakerId ?? this.speakerId,
+    speed: speed ?? this.speed,
+    followReading: followReading ?? this.followReading,
+    volume: volume ?? this.volume,
+  );
 }
 
 class SettingsStore {
@@ -93,16 +102,18 @@ class SettingsStore {
   final SharedPreferences _prefs;
 
   Settings load() => Settings(
-        modelId: _prefs.getString('voice.model') ?? 'kokoro-v1',
-        speakerId: _prefs.getInt('voice.speaker') ?? 3,
-        speed: _prefs.getDouble('voice.speed') ?? 1.0,
-        followReading: _prefs.getBool('view.follow') ?? true,
-      );
+    modelId: _prefs.getString('voice.model') ?? 'kokoro-v1',
+    speakerId: _prefs.getInt('voice.speaker') ?? 3,
+    speed: _prefs.getDouble('voice.speed') ?? 1.0,
+    followReading: _prefs.getBool('view.follow') ?? true,
+    volume: _prefs.getDouble('voice.volume') ?? 1.0,
+  );
 
   Future<void> save(Settings s) async {
     await _prefs.setString('voice.model', s.modelId);
     await _prefs.setInt('voice.speaker', s.speakerId);
     await _prefs.setDouble('voice.speed', s.speed);
     await _prefs.setBool('view.follow', s.followReading);
+    await _prefs.setDouble('voice.volume', s.volume);
   }
 }

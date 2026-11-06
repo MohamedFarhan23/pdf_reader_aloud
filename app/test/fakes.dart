@@ -47,6 +47,9 @@ class FakeOutput implements AudioOutput {
   bool get isPlaying => _current != null;
 
   @override
+  Duration? get position => null;
+
+  @override
   Future<void> play(TtsAudio audio) {
     played.add(audio);
     final c = _current = Completer<void>();

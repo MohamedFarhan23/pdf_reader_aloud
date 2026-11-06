@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_soloud/flutter_soloud.dart';
 
 import '../core/interfaces.dart';
+import 'audio_polish.dart';
 
 /// Low-latency playback through SoLoud (miniaudio): AAudio/OpenSL on Android,
 /// PulseAudio/ALSA on Linux, WASAPI on Windows, Core Audio on macOS.
@@ -12,13 +13,23 @@ import '../core/interfaces.dart';
 /// flow without the gaps a file-based media player adds between clips.
 class SoloudAudioOutput implements AudioOutput {
   static Future<void>? _initializing;
+  static double _volume = 1.0;
+
+  /// Output gain for everything played (0 = silent, 1 = normal, up to 3 = boost).
+  /// Safe to call before the audio engine has started.
+  static void setVolume(double volume) {
+    _volume = volume.clamp(0.0, 3.0);
+    if (SoLoud.instance.isInitialized) SoLoud.instance.setGlobalVolume(_volume);
+  }
 
   /// Initializes the shared audio engine once per app run.
-  static Future<void> ensureInitialized() => _initializing ??= SoLoud.instance.init(
-        sampleRate: 24000, // Kokoro's native rate; Piper's 22.05 kHz is resampled
+  static Future<void> ensureInitialized() => _initializing ??= SoLoud.instance
+      .init(
+        sampleRate: playbackSampleRate, // clips arrive already resampled to this (see audio_polish.dart)
         channels: Channels.mono,
         bufferSize: 2048,
-      );
+      )
+      .then((_) => SoLoud.instance.setGlobalVolume(_volume));
 
   AudioSource? _source;
   SoundHandle? _handle;
@@ -54,6 +65,17 @@ class SoloudAudioOutput implements AudioOutput {
     _source = null;
     if (source != null) SoLoud.instance.disposeSource(source).ignore();
     if (done != null && !done.isCompleted) done.complete();
+  }
+
+  @override
+  Duration? get position {
+    final h = _handle;
+    if (h == null || !SoLoud.instance.isInitialized) return null;
+    try {
+      return SoLoud.instance.getPosition(h);
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

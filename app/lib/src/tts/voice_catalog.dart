@@ -25,6 +25,7 @@ class VoiceModel {
     required this.downloadMb,
     required this.speakers,
     this.onnxFile,
+    this.loadSeconds = 6,
   });
 
   final String id;
@@ -40,8 +41,10 @@ class VoiceModel {
   /// Model file name inside the archive (Piper voices name it after the voice).
   final String? onnxFile;
 
-  String get url =>
-      'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$archive.tar.bz2';
+  /// Rough time to load this model on a phone; paces the loading bar.
+  final int loadSeconds;
+
+  String get url => 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$archive.tar.bz2';
 
   Speaker speaker(int id) => speakers.firstWhere((s) => s.id == id, orElse: () => speakers.first);
 }
@@ -79,15 +82,36 @@ const _kokoroSpeakers = [
 
 const kokoroModel = VoiceModel(
   id: 'kokoro-v1',
-  name: 'Kokoro (natural)',
-  description: 'Most natural-sounding. 28 English voices. Needs a reasonably fast phone.',
+  name: 'Kokoro (compact)',
+  description:
+      'Natural-sounding, 28 English voices. Compressed model: lighter and faster, '
+      'with slightly less rich sound.',
   family: VoiceFamily.kokoro,
   archive: 'kokoro-int8-multi-lang-v1_0',
+  onnxFile: 'model.int8.onnx',
   downloadMb: 132,
+  loadSeconds: 9,
+  speakers: _kokoroSpeakers,
+);
+
+/// The same Kokoro voices at full precision: clearer, warmer, fewer artifacts,
+/// at roughly twice the compute and download.
+const kokoroHqModel = VoiceModel(
+  id: 'kokoro-hq',
+  name: 'Kokoro HQ (best quality)',
+  description:
+      'Full-precision Kokoro, the best-sounding option. Slower than Compact; '
+      'check "Test voice & speed" shows at least 1.0x on your phone.',
+  family: VoiceFamily.kokoro,
+  archive: 'kokoro-multi-lang-v1_0',
+  onnxFile: 'model.onnx',
+  downloadMb: 350,
+  loadSeconds: 20,
   speakers: _kokoroSpeakers,
 );
 
 const voiceCatalog = <VoiceModel>[
+  kokoroHqModel,
   kokoroModel,
   VoiceModel(
     id: 'piper-lessac',
@@ -111,5 +135,4 @@ const voiceCatalog = <VoiceModel>[
   ),
 ];
 
-VoiceModel voiceModelById(String id) =>
-    voiceCatalog.firstWhere((m) => m.id == id, orElse: () => kokoroModel);
+VoiceModel voiceModelById(String id) => voiceCatalog.firstWhere((m) => m.id == id, orElse: () => kokoroModel);
